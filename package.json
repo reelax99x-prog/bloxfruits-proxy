@@ -1,14 +1,15 @@
 {
   "name": "bloxfruits-proxy",
   "version": "1.0.0",
-  "description": "Proxy server for Blox Fruits values - fetches from bloxfruitvalues.com",
+  "description": "Lightweight proxy for Blox Fruits values - no Chrome needed",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
     "express": "^4.18.2",
-    "puppeteer": "^22.0.0"
+    "axios": "^1.6.0",
+    "cheerio": "^1.0.0-rc.12"
   },
   "engines": {
     "node": ">=18.0.0"
