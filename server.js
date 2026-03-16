@@ -1,95 +1,91 @@
 /**
- * Blox Fruits Value Proxy Server
+ * Blox Fruits Value Proxy Server (Lightweight - No Chrome)
  * 
- * يسحب قيم الفواكه من bloxfruitvalues.com باستخدام Puppeteer
+ * يسحب قيم الفواكه من bloxfruitvalues.com باستخدام axios + cheerio
  * ويخزنها مؤقتاً (cache) لمدة ساعة
+ * يعمل على Render.com Free tier بدون مشاكل
  * 
  * Endpoints:
  *   GET /           → Health check
  *   GET /values     → All fruit values as JSON
- *   GET /stock      → Current stock rotation
+ *   GET /values/:name → Specific fruit value
  */
 
 const express = require("express");
-const puppeteer = require("puppeteer");
+const axios = require("axios");
+const cheerio = require("cheerio");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 // ═══════════════════════════════════════════
-// CACHE (يحفظ البيانات لمدة ساعة)
+// CACHE
 // ═══════════════════════════════════════════
 let cachedValues = null;
 let lastFetchTime = 0;
 const CACHE_DURATION_MS = 60 * 60 * 1000; // 1 hour
 
 // ═══════════════════════════════════════════
-// SCRAPER: يسحب القيم من الموقع
+// SCRAPER (Lightweight - no browser needed)
 // ═══════════════════════════════════════════
 async function scrapeValues() {
-  console.log("[Scraper] Launching browser...");
-
-  const browser = await puppeteer.launch({
-    headless: "new",
-    args: [
-      "--no-sandbox",
-      "--disable-setuid-sandbox",
-      "--disable-dev-shm-usage",
-      "--disable-gpu",
-      "--single-process",
-    ],
-  });
+  console.log("[Scraper] Fetching values from bloxfruitvalues.com ...");
 
   try {
-    const page = await browser.newPage();
-
-    // تعيين User-Agent طبيعي
-    await page.setUserAgent(
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    );
-
-    console.log("[Scraper] Navigating to bloxfruitvalues.com/values ...");
-    await page.goto("https://bloxfruitvalues.com/values", {
-      waitUntil: "networkidle2",
-      timeout: 30000,
+    const response = await axios.get("https://bloxfruitvalues.com/values", {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        Accept:
+          "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Cache-Control": "no-cache",
+      },
+      timeout: 15000,
     });
 
-    // انتظر تحميل المحتوى
-    await page.waitForSelector("body", { timeout: 10000 });
+    const $ = cheerio.load(response.data);
+    const fruits = [];
 
-    // استخراج البيانات من الصفحة
-    const fruits = await page.evaluate(() => {
-      const results = [];
-
-      // البحث عن العناصر التي تحتوي على بيانات الفواكه
-      // ملاحظة: قد تحتاج لتعديل الـ selectors حسب تصميم الموقع الفعلي
-      const items = document.querySelectorAll(
-        '[class*="fruit"], [class*="item"], [class*="card"], [class*="value"]'
+    // Try multiple selectors to find fruit data
+    // Pattern 1: Cards/items with name and value
+    $(
+      '[class*="fruit"], [class*="item"], [class*="card"], [data-fruit], [class*="row"]'
+    ).each((i, el) => {
+      const $el = $(el);
+      const nameEl = $el.find(
+        '[class*="name"], h3, h4, [class*="title"], span:first-child'
+      );
+      const valueEl = $el.find(
+        '[class*="value"], [class*="price"], [class*="worth"], [class*="number"]'
       );
 
-      items.forEach((item) => {
-        const nameEl =
-          item.querySelector('[class*="name"], h3, h4, [class*="title"]');
-        const valueEl =
-          item.querySelector('[class*="value"], [class*="price"], [class*="worth"]');
+      if (nameEl.length && valueEl.length) {
+        const name = nameEl.first().text().trim();
+        const valueText = valueEl.first().text().trim();
+        const numericValue = parseValueText(valueText);
 
-        if (nameEl && valueEl) {
-          const name = nameEl.textContent.trim();
-          const valueText = valueEl.textContent.trim();
+        if (name && numericValue > 0 && name.length < 30) {
+          fruits.push({
+            name: name,
+            value: numericValue,
+            rawValue: valueText,
+          });
+        }
+      }
+    });
 
-          // تحويل القيم النصية لأرقام (مثل "8.5M" → 8500000)
-          let numericValue = 0;
-          const match = valueText.match(/([\d,.]+)\s*(M|K|B)?/i);
-          if (match) {
-            numericValue = parseFloat(match[1].replace(/,/g, ""));
-            const suffix = (match[2] || "").toUpperCase();
-            if (suffix === "M") numericValue *= 1000000;
-            else if (suffix === "K") numericValue *= 1000;
-            else if (suffix === "B") numericValue *= 1000000000;
-          }
+    // Pattern 2: Table rows
+    if (fruits.length === 0) {
+      $("tr, [class*='table'] > div").each((i, el) => {
+        const cells = $(el).find("td, > div, > span");
+        if (cells.length >= 2) {
+          const name = $(cells[0]).text().trim();
+          const valueText = $(cells[1]).text().trim();
+          const numericValue = parseValueText(valueText);
 
-          if (name && numericValue > 0) {
-            results.push({
+          if (name && numericValue > 0 && name.length < 30) {
+            fruits.push({
               name: name,
               value: numericValue,
               rawValue: valueText,
@@ -97,81 +93,82 @@ async function scrapeValues() {
           }
         }
       });
-
-      // إذا لم نجد بالـ selectors أعلاه، نحاول البحث في النص
-      if (results.length === 0) {
-        // طريقة بديلة: البحث عن أنماط في المحتوى الكامل
-        const bodyText = document.body.innerText;
-        console.log("Page content length:", bodyText.length);
-      }
-
-      return results;
-    });
-
-    console.log(`[Scraper] Found ${fruits.length} fruits`);
-
-    // إذا لم نجد بيانات من الـ scraping، نرجع القيم الافتراضية
-    if (fruits.length === 0) {
-      console.log("[Scraper] No data scraped, using fallback values");
-      return getFallbackValues();
     }
 
-    return fruits;
+    console.log(`[Scraper] Found ${fruits.length} fruits from website`);
+
+    if (fruits.length > 0) {
+      return fruits;
+    }
+
+    // If scraping didn't work (anti-bot), use fallback
+    console.log("[Scraper] Could not parse page, using community values");
+    return getFallbackValues();
   } catch (error) {
     console.error("[Scraper] Error:", error.message);
     return getFallbackValues();
-  } finally {
-    await browser.close();
   }
 }
 
+// Parse value text like "8.5M" → 8500000
+function parseValueText(text) {
+  if (!text) return 0;
+  const match = text.replace(/,/g, "").match(/([\d.]+)\s*(M|K|B)?/i);
+  if (!match) return 0;
+
+  let val = parseFloat(match[1]);
+  const suffix = (match[2] || "").toUpperCase();
+  if (suffix === "M") val *= 1000000;
+  else if (suffix === "K") val *= 1000;
+  else if (suffix === "B") val *= 1000000000;
+  return val;
+}
+
 // ═══════════════════════════════════════════
-// FALLBACK VALUES (القيم الافتراضية إذا فشل السحب)
-// تُحدّث يدوياً من bloxfruitvalues.com
+// FALLBACK VALUES (Updated for 2026 meta)
+// هذي القيم تُستخدم اذا فشل السحب من الموقع
+// حدّثها يدوياً من bloxfruitvalues.com كل فترة
 // ═══════════════════════════════════════════
 function getFallbackValues() {
   return [
-    { name: "Kitsune",  value: 8000000,  demand: 10, trend: "Up"     },
+    { name: "Kitsune",  value: 8000000,  demand: 10, trend: "Up" },
     { name: "Leopard",  value: 7500000,  demand: 10, trend: "Stable" },
-    { name: "Dragon",   value: 6500000,  demand: 9,  trend: "Down"   },
-    { name: "T-Rex",    value: 6000000,  demand: 9,  trend: "Up"     },
+    { name: "Dragon",   value: 6500000,  demand: 9,  trend: "Down" },
+    { name: "T-Rex",    value: 6000000,  demand: 9,  trend: "Up" },
     { name: "Spirit",   value: 5500000,  demand: 8,  trend: "Stable" },
-    { name: "Dough",    value: 4800000,  demand: 9,  trend: "Up"     },
+    { name: "Dough",    value: 4800000,  demand: 9,  trend: "Up" },
     { name: "Venom",    value: 4200000,  demand: 8,  trend: "Stable" },
-    { name: "Control",  value: 3800000,  demand: 7,  trend: "Down"   },
-    { name: "Blizzard", value: 3500000,  demand: 7,  trend: "Up"     },
+    { name: "Control",  value: 3800000,  demand: 7,  trend: "Down" },
+    { name: "Blizzard", value: 3500000,  demand: 7,  trend: "Up" },
     { name: "Mammoth",  value: 3200000,  demand: 7,  trend: "Stable" },
-    { name: "Buddha",   value: 2800000,  demand: 8,  trend: "Up"     },
-    { name: "Gravity",  value: 2000000,  demand: 5,  trend: "Down"   },
+    { name: "Buddha",   value: 2800000,  demand: 8,  trend: "Up" },
+    { name: "Gravity",  value: 2000000,  demand: 5,  trend: "Down" },
     { name: "Shadow",   value: 1800000,  demand: 6,  trend: "Stable" },
-    { name: "Rumble",   value: 1500000,  demand: 5,  trend: "Down"   },
-    { name: "Phoenix",  value: 1200000,  demand: 6,  trend: "Up"     },
+    { name: "Rumble",   value: 1500000,  demand: 5,  trend: "Down" },
+    { name: "Phoenix",  value: 1200000,  demand: 6,  trend: "Up" },
     { name: "Light",    value: 800000,   demand: 4,  trend: "Stable" },
-    { name: "Magma",    value: 600000,   demand: 4,  trend: "Down"   },
+    { name: "Magma",    value: 600000,   demand: 4,  trend: "Down" },
     { name: "Quake",    value: 500000,   demand: 3,  trend: "Stable" },
     { name: "Ice",      value: 350000,   demand: 3,  trend: "Stable" },
-    { name: "Dark",     value: 300000,   demand: 3,  trend: "Down"   },
+    { name: "Dark",     value: 300000,   demand: 3,  trend: "Down" },
     { name: "Flame",    value: 150000,   demand: 2,  trend: "Stable" },
     { name: "Sand",     value: 100000,   demand: 2,  trend: "Stable" },
     { name: "Rubber",   value: 80000,    demand: 2,  trend: "Stable" },
-    { name: "Smoke",    value: 50000,    demand: 1,  trend: "Down"   },
-    { name: "Spin",     value: 20000,    demand: 1,  trend: "Down"   },
+    { name: "Smoke",    value: 50000,    demand: 1,  trend: "Down" },
+    { name: "Spin",     value: 20000,    demand: 1,  trend: "Down" },
   ];
 }
 
 // ═══════════════════════════════════════════
-// GET VALUES (مع Cache)
+// GET VALUES (with Cache)
 // ═══════════════════════════════════════════
 async function getValues() {
   const now = Date.now();
-
-  // إذا الـ cache لسا صالح، نرجع البيانات المحفوظة
   if (cachedValues && now - lastFetchTime < CACHE_DURATION_MS) {
     console.log("[Cache] Returning cached values");
     return cachedValues;
   }
 
-  // نسحب بيانات جديدة
   console.log("[Cache] Cache expired, fetching new data...");
   cachedValues = await scrapeValues();
   lastFetchTime = now;
@@ -182,18 +179,17 @@ async function getValues() {
 // API ENDPOINTS
 // ═══════════════════════════════════════════
 
-// Health check
 app.get("/", (req, res) => {
   res.json({
     status: "ok",
-    service: "Blox Fruits Value Proxy",
+    service: "Blox Fruits Value Proxy v2",
     cacheAge: cachedValues
       ? Math.floor((Date.now() - lastFetchTime) / 1000) + "s"
       : "empty",
+    fruitCount: cachedValues ? cachedValues.length : 0,
   });
 });
 
-// جميع قيم الفواكه
 app.get("/values", async (req, res) => {
   try {
     const values = await getValues();
@@ -213,14 +209,12 @@ app.get("/values", async (req, res) => {
   }
 });
 
-// قيمة فاكهة محددة
 app.get("/values/:fruitName", async (req, res) => {
   try {
     const values = await getValues();
     const fruit = values.find(
       (f) => f.name.toLowerCase() === req.params.fruitName.toLowerCase()
     );
-
     if (fruit) {
       res.json({ success: true, fruit });
     } else {
@@ -232,17 +226,16 @@ app.get("/values/:fruitName", async (req, res) => {
 });
 
 // ═══════════════════════════════════════════
-// START SERVER
+// START
 // ═══════════════════════════════════════════
 app.listen(PORT, () => {
-  console.log(`[Server] Blox Fruits Proxy running on port ${PORT}`);
+  console.log(`[Server] Blox Fruits Proxy v2 running on port ${PORT}`);
   console.log(`[Server] Endpoints:`);
   console.log(`  GET /        → Health check`);
   console.log(`  GET /values  → All fruit values`);
   console.log(`  GET /values/:name → Specific fruit`);
 
-  // سحب البيانات مباشرة عند بدء السيرفر
   getValues().then((v) => {
-    console.log(`[Server] Initial fetch complete: ${v.length} fruits loaded`);
+    console.log(`[Server] Initial load: ${v.length} fruits ready`);
   });
 });
