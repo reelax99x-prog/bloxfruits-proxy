@@ -46,6 +46,7 @@ KNOWN_FRUITS.forEach(name => {
 // Special cases / aliases
 SLUG_TO_NAME["t-rex"] = "T-Rex";
 SLUG_TO_NAME["tiger"] = "Leopard"; // Tiger on the site = Leopard in-game
+SLUG_TO_NAME["blade"] = "Chop";    // Blade on the site = Chop in-game
 
 // ═══════════════════════════════════════════
 // SCRAPER: bloxfruitscalc.com/values
@@ -180,23 +181,23 @@ function getFallbackValues() {
     { name: "Spider",    value: 1500000,   demand: 2,  trend: "Stable", rarity: "Legendary" },
     { name: "Love",      value: 1500000,   demand: 3,  trend: "Stable", rarity: "Legendary" },
     { name: "Rumble",    value: 1200000,   demand: 3,  trend: "Stable", rarity: "Legendary" },
-    { name: "Quake",     value: 900000,    demand: 3,  trend: "Stable", rarity: "Legendary" },
-    { name: "Light",     value: 800000,    demand: 3,  trend: "Stable", rarity: "Rare" },
-    { name: "Rubber",    value: 700000,    demand: 3,  trend: "Stable", rarity: "Legendary" },
-    { name: "Magma",     value: 600000,    demand: 4,  trend: "Down",   rarity: "Uncommon" },
+    { name: "Magma",     value: 1100000,   demand: 8,  trend: "Up",     rarity: "Rare" },
+    { name: "Quake",     value: 1000000,   demand: 2,  trend: "Stable", rarity: "Legendary" },
+    { name: "Diamond",   value: 1000000,   demand: 2,  trend: "Stable", rarity: "Uncommon" },
+    { name: "Light",     value: 800000,    demand: 2,  trend: "Stable", rarity: "Rare" },
+    { name: "Ghost",     value: 800000,    demand: 1,  trend: "Down",   rarity: "Rare" },
+    { name: "Rubber",    value: 700000,    demand: 1,  trend: "Stable", rarity: "Rare" },
     { name: "Eagle",     value: 500000,    demand: 3,  trend: "Stable", rarity: "Legendary" },
-    { name: "Ice",       value: 350000,    demand: 3,  trend: "Stable", rarity: "Uncommon" },
-    { name: "Dark",      value: 300000,    demand: 3,  trend: "Down",   rarity: "Uncommon" },
-    { name: "Ghost",     value: 300000,    demand: 3,  trend: "Down",   rarity: "Rare" },
-    { name: "Diamond",   value: 200000,    demand: 2,  trend: "Stable", rarity: "Rare" },
-    { name: "Flame",     value: 150000,    demand: 2,  trend: "Stable", rarity: "Common" },
-    { name: "Sand",      value: 100000,    demand: 2,  trend: "Stable", rarity: "Common" },
-    { name: "Smoke",     value: 50000,     demand: 1,  trend: "Down",   rarity: "Common" },
-    { name: "Spin",      value: 20000,     demand: 1,  trend: "Down",   rarity: "Common" },
-    { name: "Chop",      value: 15000,     demand: 1,  trend: "Stable", rarity: "Common" },
-    { name: "Spring",    value: 12000,     demand: 1,  trend: "Down",   rarity: "Common" },
-    { name: "Bomb",      value: 10000,     demand: 1,  trend: "Down",   rarity: "Common" },
-    { name: "Spike",     value: 8000,      demand: 1,  trend: "Down",   rarity: "Common" },
+    { name: "Ice",       value: 550000,    demand: 2,  trend: "Stable", rarity: "Uncommon" },
+    { name: "Sand",      value: 420000,    demand: 1,  trend: "Stable", rarity: "Uncommon" },
+    { name: "Dark",      value: 400000,    demand: 1,  trend: "Stable", rarity: "Uncommon" },
+    { name: "Flame",     value: 250000,    demand: 1,  trend: "Stable", rarity: "Uncommon" },
+    { name: "Smoke",     value: 100000,    demand: 1,  trend: "Stable", rarity: "Common" },
+    { name: "Bomb",      value: 80000,     demand: 1,  trend: "Stable", rarity: "Common" },
+    { name: "Spring",    value: 60000,     demand: 1,  trend: "Stable", rarity: "Common" },
+    { name: "Chop",      value: 50000,     demand: 1,  trend: "Stable", rarity: "Common" },
+    { name: "Spike",     value: 180000,    demand: 1,  trend: "Stable", rarity: "Common" },
+    { name: "Spin",      value: 7500,      demand: 1,  trend: "Stable", rarity: "Common" },
     { name: "Rocket",    value: 5000,      demand: 1,  trend: "Down",   rarity: "Common" },
   ];
 }
