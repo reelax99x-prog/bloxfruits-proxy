@@ -1,29 +1,37 @@
 /**
- * Blox Fruits Value Proxy Server v3 (Live Scraping from bloxfruitscalc.com)
+ * Blox Fruits Value Proxy Server v4 (Live Values + Real Stock)
  * 
- * يسحب قيم الفواكه الحقيقية من bloxfruitscalc.com
- * ويخزنها مؤقتاً (cache) لمدة ساعة
- * يعمل على Render.com Free tier
+ * - Values: scraped from bloxfruitscalc.com (cache 1h)
+ * - Stock:  scraped from fruityblox.com/stock via Puppeteer (cache 30min)
  * 
  * Endpoints:
  *   GET /           → Health check
- *   GET /values     → All fruit values (LIVE from bloxfruitscalc.com)
+ *   GET /values     → All fruit values (LIVE)
  *   GET /values/:name → Specific fruit value
+ *   GET /stock      → Real dealer stock (Normal + Mirage)
  */
 
 const express = require("express");
 const axios = require("axios");
 const cheerio = require("cheerio");
+const puppeteer = require("puppeteer");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 // ═══════════════════════════════════════════
-// CACHE
+// CACHE — Values
 // ═══════════════════════════════════════════
 let cachedValues = null;
 let lastFetchTime = 0;
 const CACHE_DURATION_MS = 60 * 60 * 1000; // 1 hour
+
+// ═══════════════════════════════════════════
+// CACHE — Stock
+// ═══════════════════════════════════════════
+let cachedStock = null;
+let lastStockFetchTime = 0;
+const STOCK_CACHE_MS = 30 * 60 * 1000; // 30 minutes
 
 // ═══════════════════════════════════════════
 // SCRAPER: bloxfruitscalc.com/values
@@ -46,17 +54,10 @@ async function scrapeValues() {
     const $ = cheerio.load(response.data);
     const fruits = [];
 
-    // Parse links that match pattern: /values/fruit-name
-    // Each link contains: Name, Rarity, Value, Demand rating, Trend
     $('a[href*="/values/"]').each((i, el) => {
       const text = $(el).text().trim();
       if (!text || text.length < 3) return;
 
-      // Parse the text block - format is like:
-      // "DoughMythical30MPerm 3120M📊 10/10Stable"
-      // We need to extract: name, rarity, value, demand, trend
-
-      // Try to match value pattern (number + M/K/B)
       const valueMatch = text.match(
         /(\d+(?:\.\d+)?)\s*(M|K|B)(?:Perm|\s|📊)/i
       );
@@ -69,35 +70,28 @@ async function scrapeValues() {
       else if (suffix === "K") numericValue *= 1000;
       else if (suffix === "B") numericValue *= 1000000000;
 
-      // Extract demand (X/10 pattern)
       const demandMatch = text.match(/(\d+)\/10/);
       const demand = demandMatch ? parseInt(demandMatch[1]) : 5;
 
-      // Extract trend (last word: Stable, Overpaid, Fluctuating, Unstable)
       let trend = "Stable";
       if (/Overpaid/i.test(text)) trend = "Up";
       else if (/Fluctuating|Unstable/i.test(text)) trend = "Down";
       else if (/Stable/i.test(text)) trend = "Stable";
 
-      // Extract rarity
       let rarity = "Common";
       const rarityMatch = text.match(
         /(Mythical|Legendary|Rare|Uncommon|Common|Limited)/i
       );
       if (rarityMatch) rarity = rarityMatch[1];
 
-      // Extract name - everything before the rarity keyword
       const nameEndIndex = text.search(
         /(?:Mythical|Legendary|Rare|Uncommon|Common|Limited)/i
       );
       if (nameEndIndex <= 0) return;
       const name = text.substring(0, nameEndIndex).trim();
 
-      // Skip duplicates and invalid names
       if (!name || name.length > 30 || name.length < 2) return;
       if (fruits.find((f) => f.name === name)) return;
-
-      // Skip "Limited" items and gamepasses (keep only fruits)
       if (rarity === "Limited") return;
 
       fruits.push({
@@ -111,11 +105,10 @@ async function scrapeValues() {
     });
 
     console.log(
-      `[Scraper] ✅ Parsed ${fruits.length} fruits from bloxfruitscalc.com`
+      `[Scraper] Parsed ${fruits.length} fruits from bloxfruitscalc.com`
     );
 
     if (fruits.length > 0) {
-      // Sort by value descending
       fruits.sort((a, b) => b.value - a.value);
       return fruits;
     }
@@ -128,21 +121,111 @@ async function scrapeValues() {
   }
 }
 
-// Parse value text like "8.5M" → 8500000
-function parseValueText(text) {
-  if (!text) return 0;
-  const match = text.replace(/,/g, "").match(/([\d.]+)\s*(M|K|B)?/i);
-  if (!match) return 0;
-  let val = parseFloat(match[1]);
-  const suffix = (match[2] || "").toUpperCase();
-  if (suffix === "M") val *= 1000000;
-  else if (suffix === "K") val *= 1000;
-  else if (suffix === "B") val *= 1000000000;
-  return val;
+// ═══════════════════════════════════════════
+// SCRAPER: fruityblox.com/stock (Puppeteer)
+// ═══════════════════════════════════════════
+async function scrapeStock() {
+  console.log("[Stock] Fetching REAL stock from fruityblox.com/stock ...");
+
+  let browser = null;
+  try {
+    browser = await puppeteer.launch({
+      headless: "new",
+      args: [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+        "--single-process",
+        "--no-zygote",
+      ],
+    });
+
+    const page = await browser.newPage();
+    await page.setUserAgent(
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    );
+
+    await page.goto("https://fruityblox.com/stock", {
+      waitUntil: "networkidle2",
+      timeout: 30000,
+    });
+
+    // Wait for JS content to render
+    await page.waitForTimeout(5000);
+
+    // Extract stock data
+    const stockData = await page.evaluate(() => {
+      const result = {
+        normal: [],
+        mirage: [],
+        timestamp: new Date().toISOString(),
+      };
+
+      const knownFruits = [
+        "Rocket", "Spin", "Chop", "Spring", "Bomb", "Smoke", "Spike",
+        "Flame", "Falcon", "Ice", "Sand", "Dark", "Diamond", "Light",
+        "Rubber", "Barrier", "Magma", "Quake", "Buddha", "Love",
+        "Spider", "Sound", "Phoenix", "Portal", "Rumble", "Pain",
+        "Blizzard", "Gravity", "Mammoth", "T-Rex", "Dough", "Shadow",
+        "Venom", "Control", "Spirit", "Dragon", "Leopard", "Kitsune",
+        "Gas", "Lightning", "Yeti", "Ghost", "Tiger", "Torment",
+        "Glacier", "Eagle"
+      ];
+
+      // Find all elements and extract fruit names
+      const allElements = document.querySelectorAll("div, span, p, h1, h2, h3, h4, h5, h6, li, a, td");
+      const fruitNames = [];
+
+      allElements.forEach((el) => {
+        const text = el.textContent.trim();
+        if (knownFruits.includes(text) && !fruitNames.includes(text)) {
+          fruitNames.push(text);
+        }
+      });
+
+      // Split: first batch = Normal Dealer, second batch = Mirage Dealer
+      if (fruitNames.length > 0) {
+        const halfPoint = Math.min(4, Math.ceil(fruitNames.length / 2));
+        result.normal = fruitNames.slice(0, halfPoint);
+        result.mirage = fruitNames.slice(halfPoint, halfPoint + 4);
+      }
+
+      return result;
+    });
+
+    await browser.close();
+    browser = null;
+
+    if (stockData.normal.length > 0 || stockData.mirage.length > 0) {
+      console.log(`[Stock] Normal Dealer: ${stockData.normal.join(", ") || "none"}`);
+      console.log(`[Stock] Mirage Dealer: ${stockData.mirage.join(", ") || "none"}`);
+      return stockData;
+    }
+
+    console.log("[Stock] Could not parse stock, using fallback");
+    return getFallbackStock();
+  } catch (error) {
+    console.error("[Stock] Puppeteer error:", error.message);
+    if (browser) {
+      try { await browser.close(); } catch (e) {}
+    }
+    return getFallbackStock();
+  }
+}
+
+function getFallbackStock() {
+  return {
+    normal: [],
+    mirage: [],
+    timestamp: new Date().toISOString(),
+    fallback: true,
+    message: "Could not fetch real stock data",
+  };
 }
 
 // ═══════════════════════════════════════════
-// FALLBACK VALUES (used only if scraping completely fails)
+// FALLBACK VALUES
 // ═══════════════════════════════════════════
 function getFallbackValues() {
   return [
@@ -180,14 +263,27 @@ function getFallbackValues() {
 async function getValues() {
   const now = Date.now();
   if (cachedValues && now - lastFetchTime < CACHE_DURATION_MS) {
-    console.log("[Cache] Returning cached values");
     return cachedValues;
   }
-
-  console.log("[Cache] Cache expired, fetching new data...");
+  console.log("[Cache] Values cache expired, fetching...");
   cachedValues = await scrapeValues();
   lastFetchTime = now;
   return cachedValues;
+}
+
+// ═══════════════════════════════════════════
+// GET STOCK (with Cache)
+// ═══════════════════════════════════════════
+async function getStock() {
+  const now = Date.now();
+  if (cachedStock && now - lastStockFetchTime < STOCK_CACHE_MS) {
+    console.log("[Cache] Returning cached stock");
+    return cachedStock;
+  }
+  console.log("[Cache] Stock cache expired, fetching...");
+  cachedStock = await scrapeStock();
+  lastStockFetchTime = now;
+  return cachedStock;
 }
 
 // ═══════════════════════════════════════════
@@ -197,11 +293,12 @@ async function getValues() {
 app.get("/", (req, res) => {
   res.json({
     status: "ok",
-    service: "Blox Fruits Value Proxy v3 (LIVE from bloxfruitscalc.com)",
-    source: "bloxfruitscalc.com",
-    cacheAge: cachedValues
-      ? Math.floor((Date.now() - lastFetchTime) / 1000) + "s"
-      : "empty",
+    service: "Blox Fruits Proxy v4 (Live Values + Real Stock)",
+    sources: { values: "bloxfruitscalc.com", stock: "fruityblox.com" },
+    cache: {
+      valuesAge: cachedValues ? Math.floor((Date.now() - lastFetchTime) / 1000) + "s" : "empty",
+      stockAge: cachedStock ? Math.floor((Date.now() - lastStockFetchTime) / 1000) + "s" : "empty",
+    },
     fruitCount: cachedValues ? cachedValues.length : 0,
   });
 });
@@ -218,11 +315,7 @@ app.get("/values", async (req, res) => {
     });
   } catch (error) {
     console.error("[API] Error:", error.message);
-    res.status(500).json({
-      success: false,
-      error: error.message,
-      fruits: getFallbackValues(),
-    });
+    res.status(500).json({ success: false, error: error.message, fruits: getFallbackValues() });
   }
 });
 
@@ -234,14 +327,29 @@ app.get("/values/:fruitName", async (req, res) => {
     if (fruit) {
       res.json({ success: true, fruit });
     } else {
-      res.status(404).json({
-        success: false,
-        error: "Fruit not found",
-        available: values.map((f) => f.name),
-      });
+      res.status(404).json({ success: false, error: "Fruit not found", available: values.map((f) => f.name) });
     }
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Real stock endpoint
+app.get("/stock", async (req, res) => {
+  try {
+    const stock = await getStock();
+    res.json({
+      success: true,
+      source: "fruityblox.com",
+      lastUpdated: stock.timestamp,
+      cacheAge: Math.floor((Date.now() - lastStockFetchTime) / 1000) + "s",
+      normal: stock.normal,
+      mirage: stock.mirage,
+      fallback: stock.fallback || false,
+    });
+  } catch (error) {
+    console.error("[Stock API] Error:", error.message);
+    res.status(500).json({ success: false, error: error.message, normal: [], mirage: [] });
   }
 });
 
@@ -249,20 +357,23 @@ app.get("/values/:fruitName", async (req, res) => {
 // START
 // ═══════════════════════════════════════════
 app.listen(PORT, () => {
-  console.log(`[Server] Blox Fruits Proxy v3 (LIVE) on port ${PORT}`);
-  console.log(`[Server] Source: bloxfruitscalc.com`);
+  console.log(`[Server] Blox Fruits Proxy v4 on port ${PORT}`);
+  console.log(`[Server] Sources: bloxfruitscalc.com (values) + fruityblox.com (stock)`);
   console.log(`[Server] Endpoints:`);
-  console.log(`  GET /        → Health check`);
-  console.log(`  GET /values  → All fruit values (LIVE)`);
-  console.log(`  GET /values/:name → Specific fruit`);
+  console.log(`  GET /           → Health check`);
+  console.log(`  GET /values     → All fruit values (LIVE)`);
+  console.log(`  GET /values/:n  → Specific fruit`);
+  console.log(`  GET /stock      → Real dealer stock`);
 
+  // Pre-load values
   getValues().then((v) => {
-    console.log(`[Server] ✅ Initial load: ${v.length} fruits ready`);
-    if (v.length > 0) {
-      console.log(`[Server] Top 5 fruits:`);
-      v.slice(0, 5).forEach((f) => {
-        console.log(`  ${f.name}: ${f.displayValue || f.value} (D:${f.demand})`);
-      });
-    }
+    console.log(`[Server] Values loaded: ${v.length} fruits`);
   });
+
+  // Pre-load stock after a moment
+  setTimeout(() => {
+    getStock().then((s) => {
+      console.log(`[Server] Stock loaded: Normal=[${s.normal.join(", ")}] Mirage=[${s.mirage.join(", ")}]`);
+    });
+  }, 3000);
 });
