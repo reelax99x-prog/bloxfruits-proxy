@@ -1,5 +1,5 @@
 /**
- * Blox Fruits Value Proxy Server v3 (Live Scraping from bloxfruitscalc.com)
+ * Blox Fruits Value Proxy Server v4 (Live Scraping from bloxfruitscalc.com)
  * 
  * يسحب قيم الفواكه الحقيقية من bloxfruitscalc.com
  * ويخزنها مؤقتاً (cache) لمدة ساعة
@@ -26,6 +26,28 @@ let lastFetchTime = 0;
 const CACHE_DURATION_MS = 60 * 60 * 1000; // 1 hour
 
 // ═══════════════════════════════════════════
+// KNOWN FRUIT NAMES (all 41 from the game)
+// Used to match scraped names & fill gaps
+// ═══════════════════════════════════════════
+const KNOWN_FRUITS = [
+  "Kitsune", "Leopard", "Dragon", "T-Rex", "Spirit", "Yeti", "Gas",
+  "Gravity", "Mammoth", "Dough", "Venom", "Control", "Shadow",
+  "Blizzard", "Buddha", "Rumble", "Phoenix", "Sound", "Pain",
+  "Portal", "Love", "Spider", "Quake", "Light", "Rubber", "Creation",
+  "Ghost", "Magma", "Flame", "Sand", "Ice", "Dark", "Diamond",
+  "Eagle", "Smoke", "Spin", "Chop", "Spring", "Bomb", "Spike", "Rocket"
+];
+
+// Map slug → proper name for URL-based extraction
+const SLUG_TO_NAME = {};
+KNOWN_FRUITS.forEach(name => {
+  SLUG_TO_NAME[name.toLowerCase().replace(/\s+/g, "-")] = name;
+});
+// Special cases / aliases
+SLUG_TO_NAME["t-rex"] = "T-Rex";
+SLUG_TO_NAME["tiger"] = "Leopard"; // Tiger on the site = Leopard in-game
+
+// ═══════════════════════════════════════════
 // SCRAPER: bloxfruitscalc.com/values
 // ═══════════════════════════════════════════
 async function scrapeValues() {
@@ -45,14 +67,25 @@ async function scrapeValues() {
 
     const $ = cheerio.load(response.data);
     const fruits = [];
+    const foundNames = new Set();
 
     $('a[href*="/values/"]').each((i, el) => {
+      const href = $(el).attr("href") || "";
       const text = $(el).text().trim();
       if (!text || text.length < 3) return;
 
-      const valueMatch = text.match(
-        /(\d+(?:\.\d+)?)\s*(M|K|B)(?:Perm|\s|📊)/i
-      );
+      // Extract fruit slug from URL: /values/kitsune → kitsune
+      const slugMatch = href.match(/\/values\/([a-z0-9-]+)/i);
+      if (!slugMatch) return;
+      const slug = slugMatch[1].toLowerCase();
+
+      // Only process known fruits (skip limited variants, gamepasses, etc.)
+      const properName = SLUG_TO_NAME[slug];
+      if (!properName) return;
+      if (foundNames.has(properName)) return;
+
+      // Parse value: matches "460M", "6.5M", "500K", etc.
+      const valueMatch = text.match(/(\d+(?:\.\d+)?)\s*(M|K|B)/i);
       if (!valueMatch) return;
 
       const rawValue = parseFloat(valueMatch[1]);
@@ -62,32 +95,27 @@ async function scrapeValues() {
       else if (suffix === "K") numericValue *= 1000;
       else if (suffix === "B") numericValue *= 1000000000;
 
+      // Parse demand: "10/10", "5/10", etc.
       const demandMatch = text.match(/(\d+)\/10/);
       const demand = demandMatch ? parseInt(demandMatch[1]) : 5;
 
+      // Parse trend
       let trend = "Stable";
       if (/Overpaid/i.test(text)) trend = "Up";
+      else if (/Underpaid/i.test(text)) trend = "Down";
       else if (/Fluctuating|Unstable/i.test(text)) trend = "Down";
       else if (/Stable/i.test(text)) trend = "Stable";
 
+      // Parse rarity
       let rarity = "Common";
       const rarityMatch = text.match(
-        /(Mythical|Legendary|Rare|Uncommon|Common|Limited)/i
+        /(Mythical|Legendary|Rare|Uncommon|Common)/i
       );
       if (rarityMatch) rarity = rarityMatch[1];
 
-      const nameEndIndex = text.search(
-        /(?:Mythical|Legendary|Rare|Uncommon|Common|Limited)/i
-      );
-      if (nameEndIndex <= 0) return;
-      const name = text.substring(0, nameEndIndex).trim();
-
-      if (!name || name.length > 30 || name.length < 2) return;
-      if (fruits.find((f) => f.name === name)) return;
-      if (rarity === "Limited") return;
-
+      foundNames.add(properName);
       fruits.push({
-        name: name,
+        name: properName,
         value: numericValue,
         displayValue: rawValue + suffix,
         demand: demand,
@@ -100,13 +128,24 @@ async function scrapeValues() {
       `[Scraper] Parsed ${fruits.length} fruits from bloxfruitscalc.com`
     );
 
+    // Fill in any missing fruits from fallback
+    const fallback = getFallbackValues();
+    for (const fb of fallback) {
+      if (!foundNames.has(fb.name)) {
+        fruits.push(fb);
+        console.log(`[Scraper] Added missing fruit from fallback: ${fb.name}`);
+      }
+    }
+
+    console.log(`[Scraper] Total fruits after fill: ${fruits.length}`);
+
     if (fruits.length > 0) {
       fruits.sort((a, b) => b.value - a.value);
       return fruits;
     }
 
-    console.log("[Scraper] No fruits parsed, using fallback values");
-    return getFallbackValues();
+    console.log("[Scraper] No fruits parsed, using full fallback");
+    return fallback;
   } catch (error) {
     console.error("[Scraper] Error:", error.message);
     return getFallbackValues();
@@ -114,35 +153,51 @@ async function scrapeValues() {
 }
 
 // ═══════════════════════════════════════════
-// FALLBACK VALUES (used only if scraping completely fails)
+// FALLBACK VALUES (all 41 fruits)
 // ═══════════════════════════════════════════
 function getFallbackValues() {
   return [
-    { name: "Lightning", value: 80000000, demand: 10, trend: "Stable", rarity: "Legendary" },
-    { name: "Gas",       value: 60000000, demand: 8,  trend: "Stable", rarity: "Mythical" },
-    { name: "Dough",     value: 30000000, demand: 10, trend: "Stable", rarity: "Mythical" },
-    { name: "T-Rex",     value: 20000000, demand: 8,  trend: "Stable", rarity: "Mythical" },
-    { name: "Venom",     value: 20000000, demand: 10, trend: "Down",   rarity: "Mythical" },
-    { name: "Gravity",   value: 10000000, demand: 4,  trend: "Stable", rarity: "Mythical" },
-    { name: "Mammoth",   value: 10000000, demand: 5,  trend: "Stable", rarity: "Mythical" },
-    { name: "Spirit",    value: 10000000, demand: 6,  trend: "Stable", rarity: "Mythical" },
-    { name: "Buddha",    value: 10000000, demand: 10, trend: "Up",     rarity: "Legendary" },
-    { name: "Shadow",    value: 6500000,  demand: 5,  trend: "Stable", rarity: "Mythical" },
-    { name: "Blizzard",  value: 5000000,  demand: 5,  trend: "Stable", rarity: "Legendary" },
-    { name: "Phoenix",   value: 2800000,  demand: 3,  trend: "Stable", rarity: "Legendary" },
-    { name: "Sound",     value: 2500000,  demand: 4,  trend: "Stable", rarity: "Legendary" },
-    { name: "Control",   value: 2000000,  demand: 3,  trend: "Stable", rarity: "Legendary" },
-    { name: "Rumble",    value: 1500000,  demand: 3,  trend: "Stable", rarity: "Legendary" },
-    { name: "Kitsune",   value: 1200000,  demand: 4,  trend: "Stable", rarity: "Legendary" },
-    { name: "Dragon",    value: 1000000,  demand: 3,  trend: "Stable", rarity: "Legendary" },
-    { name: "Leopard",   value: 800000,   demand: 3,  trend: "Down",   rarity: "Legendary" },
-    { name: "Light",     value: 500000,   demand: 3,  trend: "Stable", rarity: "Rare" },
-    { name: "Ice",       value: 350000,   demand: 2,  trend: "Stable", rarity: "Uncommon" },
-    { name: "Dark",      value: 300000,   demand: 2,  trend: "Stable", rarity: "Uncommon" },
-    { name: "Flame",     value: 200000,   demand: 2,  trend: "Stable", rarity: "Common" },
-    { name: "Magma",     value: 150000,   demand: 2,  trend: "Stable", rarity: "Uncommon" },
-    { name: "Sand",      value: 100000,   demand: 1,  trend: "Stable", rarity: "Common" },
-    { name: "Smoke",     value: 50000,    demand: 1,  trend: "Down",   rarity: "Common" },
+    { name: "Kitsune",   value: 460000000, demand: 10, trend: "Up",     rarity: "Mythical" },
+    { name: "Yeti",      value: 150000000, demand: 10, trend: "Stable", rarity: "Mythical" },
+    { name: "Control",   value: 140000000, demand: 5,  trend: "Down",   rarity: "Mythical" },
+    { name: "Gas",       value: 60000000,  demand: 8,  trend: "Stable", rarity: "Mythical" },
+    { name: "Dough",     value: 30000000,  demand: 10, trend: "Stable", rarity: "Mythical" },
+    { name: "T-Rex",     value: 20000000,  demand: 8,  trend: "Stable", rarity: "Mythical" },
+    { name: "Venom",     value: 20000000,  demand: 10, trend: "Down",   rarity: "Mythical" },
+    { name: "Pain",      value: 10000000,  demand: 5,  trend: "Stable", rarity: "Legendary" },
+    { name: "Gravity",   value: 10000000,  demand: 4,  trend: "Stable", rarity: "Mythical" },
+    { name: "Mammoth",   value: 10000000,  demand: 5,  trend: "Stable", rarity: "Mythical" },
+    { name: "Spirit",    value: 10000000,  demand: 6,  trend: "Stable", rarity: "Mythical" },
+    { name: "Portal",    value: 10000000,  demand: 10, trend: "Up",     rarity: "Legendary" },
+    { name: "Buddha",    value: 10000000,  demand: 10, trend: "Up",     rarity: "Legendary" },
+    { name: "Dragon",    value: 8000000,   demand: 5,  trend: "Stable", rarity: "Legendary" },
+    { name: "Leopard",   value: 7500000,   demand: 5,  trend: "Stable", rarity: "Legendary" },
+    { name: "Shadow",    value: 6500000,   demand: 5,  trend: "Stable", rarity: "Mythical" },
+    { name: "Blizzard",  value: 5000000,   demand: 5,  trend: "Stable", rarity: "Legendary" },
+    { name: "Creation",  value: 3500000,   demand: 3,  trend: "Stable", rarity: "Legendary" },
+    { name: "Phoenix",   value: 2800000,   demand: 3,  trend: "Stable", rarity: "Legendary" },
+    { name: "Sound",     value: 2500000,   demand: 4,  trend: "Stable", rarity: "Legendary" },
+    { name: "Spider",    value: 1500000,   demand: 2,  trend: "Stable", rarity: "Legendary" },
+    { name: "Love",      value: 1500000,   demand: 3,  trend: "Stable", rarity: "Legendary" },
+    { name: "Rumble",    value: 1200000,   demand: 3,  trend: "Stable", rarity: "Legendary" },
+    { name: "Quake",     value: 900000,    demand: 3,  trend: "Stable", rarity: "Legendary" },
+    { name: "Light",     value: 800000,    demand: 3,  trend: "Stable", rarity: "Rare" },
+    { name: "Rubber",    value: 700000,    demand: 3,  trend: "Stable", rarity: "Legendary" },
+    { name: "Magma",     value: 600000,    demand: 4,  trend: "Down",   rarity: "Uncommon" },
+    { name: "Eagle",     value: 500000,    demand: 3,  trend: "Stable", rarity: "Legendary" },
+    { name: "Ice",       value: 350000,    demand: 3,  trend: "Stable", rarity: "Uncommon" },
+    { name: "Dark",      value: 300000,    demand: 3,  trend: "Down",   rarity: "Uncommon" },
+    { name: "Ghost",     value: 300000,    demand: 3,  trend: "Down",   rarity: "Rare" },
+    { name: "Diamond",   value: 200000,    demand: 2,  trend: "Stable", rarity: "Rare" },
+    { name: "Flame",     value: 150000,    demand: 2,  trend: "Stable", rarity: "Common" },
+    { name: "Sand",      value: 100000,    demand: 2,  trend: "Stable", rarity: "Common" },
+    { name: "Smoke",     value: 50000,     demand: 1,  trend: "Down",   rarity: "Common" },
+    { name: "Spin",      value: 20000,     demand: 1,  trend: "Down",   rarity: "Common" },
+    { name: "Chop",      value: 15000,     demand: 1,  trend: "Stable", rarity: "Common" },
+    { name: "Spring",    value: 12000,     demand: 1,  trend: "Down",   rarity: "Common" },
+    { name: "Bomb",      value: 10000,     demand: 1,  trend: "Down",   rarity: "Common" },
+    { name: "Spike",     value: 8000,      demand: 1,  trend: "Down",   rarity: "Common" },
+    { name: "Rocket",    value: 5000,      demand: 1,  trend: "Down",   rarity: "Common" },
   ];
 }
 
@@ -169,7 +224,7 @@ async function getValues() {
 app.get("/", (req, res) => {
   res.json({
     status: "ok",
-    service: "Blox Fruits Value Proxy v3 (LIVE from bloxfruitscalc.com)",
+    service: "Blox Fruits Value Proxy v4 (LIVE from bloxfruitscalc.com)",
     source: "bloxfruitscalc.com",
     cacheAge: cachedValues
       ? Math.floor((Date.now() - lastFetchTime) / 1000) + "s"
@@ -221,8 +276,9 @@ app.get("/values/:fruitName", async (req, res) => {
 // START
 // ═══════════════════════════════════════════
 app.listen(PORT, () => {
-  console.log(`[Server] Blox Fruits Proxy v3 (LIVE) on port ${PORT}`);
+  console.log(`[Server] Blox Fruits Proxy v4 (LIVE) on port ${PORT}`);
   console.log(`[Server] Source: bloxfruitscalc.com`);
+  console.log(`[Server] Known fruits: ${KNOWN_FRUITS.length}`);
   console.log(`[Server] Endpoints:`);
   console.log(`  GET /        → Health check`);
   console.log(`  GET /values  → All fruit values (LIVE)`);
